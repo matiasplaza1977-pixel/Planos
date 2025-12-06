@@ -1,5 +1,5 @@
 import streamlit as st
-import fitz  # PyMuPDF
+import fitz
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 import io
