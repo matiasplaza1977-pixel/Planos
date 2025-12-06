@@ -7,14 +7,8 @@ import numpy as np
 from PIL import Image, ImageOps
 import tempfile
 import warnings
-
-# Importar explícitamente st_canvas
-try:
-    from streamlit_drawable_canvas import st_canvas
-except ImportError:
-    st.error(
-        "No se pudo importar streamlit-drawable-canvas. Por favor, instálalo con: pip install streamlit-drawable-canvas")
-    st.stop()
+import base64
+import json
 
 # Ignorar advertencias de descompresión de imágenes
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
@@ -195,6 +189,14 @@ def pdf_to_image(pdf_file, page_num=0, zoom=1):
     return img
 
 
+def image_to_base64(img):
+    """Convierte una imagen PIL a base64."""
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    return img_str
+
+
 # Función principal
 def main():
     st.title("Editor de Planos PDF con Streamlit")
@@ -234,6 +236,8 @@ def main():
         st.session_state.tamanio_texto = 12
     if "grosor_linea_actual" not in st.session_state:
         st.session_state.grosor_linea_actual = 5
+    if "canvas_data" not in st.session_state:
+        st.session_state.canvas_data = {}
 
     # Barra lateral para herramientas
     st.sidebar.header("Herramientas")
@@ -358,6 +362,17 @@ def main():
             # Canvas para dibujar
             st.subheader("Área de Dibujo")
 
+            # Convertir imagen a base64
+            img_base64 = image_to_base64(img)
+
+            # Obtener datos del canvas para esta página si existen
+            page_key = f"page_{st.session_state.current_page}"
+            if page_key not in st.session_state.canvas_data:
+                st.session_state.canvas_data[page_key] = {
+                    "objects": [],
+                    "background": img_base64
+                }
+
             # Configuración del canvas según la herramienta activa
             drawing_mode = "transform"  # Por defecto
 
@@ -382,129 +397,177 @@ def main():
                 drawing_mode = "transform"
                 stroke_color = "#000000"
 
-            # Crear el canvas con manejo de errores
-            try:
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 165, 0, 0.3)",
-                    stroke_width=st.session_state.grosor_linea_actual if st.session_state.herramienta_activa == "línea" else 3,
-                    stroke_color=stroke_color,
-                    background_image=img,
-                    update_streamlit=True,
-                    height=img.height,
-                    width=img.width,
-                    drawing_mode=drawing_mode,
-                    initial_drawing=None,
-                    key=f"canvas_page_{st.session_state.current_page}",
-                    display_toolbar=True,
-                )
+            # HTML y JavaScript para el canvas
+            canvas_html = f"""
+            <div id="canvas-container" style="position: relative; width: {img.width}px; height: {img.height}px; border: 1px solid #ccc; margin: 0 auto;">
+                <canvas id="drawing-canvas" width="{img.width}" height="{img.height}" style="position: absolute; top: 0; left: 0; z-index: 2;"></canvas>
+                <img id="background-image" src="data:image/png;base64,{img_base64}" style="position: absolute; top: 0; left: 0; z-index: 1; width: {img.width}px; height: {img.height}px;">
+            </div>
+            <div id="canvas-data" style="display: none;">{json.dumps(st.session_state.canvas_data[page_key])}</div>
+            """
 
-                # Procesar los resultados del canvas
-                if canvas_result.json_data is not None:
-                    objects = canvas_result.json_data["objects"]
+            st.components.v1.html(canvas_html, height=img.height + 20)
 
-                    for obj in objects:
-                        if obj["type"] == "path" and st.session_state.herramienta_activa == "línea":
-                            if len(obj["path"]) >= 2:
-                                x1, y1 = obj["path"][0]
-                                x2, y2 = obj["path"][1]
-                                x1 /= st.session_state.zoom_factor
-                                y1 /= st.session_state.zoom_factor
-                                x2 /= st.session_state.zoom_factor
-                                y2 /= st.session_state.zoom_factor
-                                st.session_state.linea_herramienta.lineas.append(
-                                    ((x1, y1), (x2, y2), st.session_state.color_linea,
-                                     st.session_state.grosor_linea_actual)
-                                )
-                        elif obj["type"] == "path" and st.session_state.herramienta_activa == "cota":
-                            if len(obj["path"]) >= 2:
-                                x1, y1 = obj["path"][0]
-                                x2, y2 = obj["path"][1]
-                                x1 /= st.session_state.zoom_factor
-                                y1 /= st.session_state.zoom_factor
-                                x2 /= st.session_state.zoom_factor
-                                y2 /= st.session_state.zoom_factor
-                                st.session_state.cota_herramienta.cotas.append(
-                                    ((x1, y1), (x2, y2), st.session_state.color_cota)
-                                )
-                        elif obj["type"] == "path" and st.session_state.herramienta_activa == "medir":
-                            if len(obj["path"]) >= 2:
-                                x1, y1 = obj["path"][0]
-                                x2, y2 = obj["path"][1]
-                                x1 /= st.session_state.zoom_factor
-                                y1 /= st.session_state.zoom_factor
-                                x2 /= st.session_state.zoom_factor
-                                y2 /= st.session_state.zoom_factor
-                                dist_px = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-                                dist_m = dist_px / st.session_state.medir_herramienta.escala_pixeles_por_metro
-                                st.session_state.medir_herramienta.medidas.append(
-                                    ((x1, y1), (x2, y2), dist_m, st.session_state.color_medir)
-                                )
-                        elif obj["type"] == "point" and st.session_state.herramienta_activa == "punto":
-                            x = obj["left"]
-                            y = obj["top"]
-                            x /= st.session_state.zoom_factor
-                            y /= st.session_state.zoom_factor
-                            st.session_state.punto_herramienta.puntos.append(
-                                (x, y, st.session_state.color_punto)
-                            )
-                        elif obj["type"] == "text" and st.session_state.herramienta_activa == "texto":
-                            x = obj["left"]
-                            y = obj["top"]
-                            texto = obj.get("text", "Texto")
-                            x /= st.session_state.zoom_factor
-                            y /= st.session_state.zoom_factor
-                            st.session_state.texto_herramienta.textos.append(
-                                (texto, x, y, st.session_state.color_texto, st.session_state.tamanio_texto)
-                            )
-                        elif obj["type"] == "rect" and st.session_state.herramienta_activa == "borrar":
-                            x = obj["left"]
-                            y = obj["top"]
-                            w = obj["width"]
-                            h = obj["height"]
-                            x /= st.session_state.zoom_factor
-                            y /= st.session_state.zoom_factor
-                            w /= st.session_state.zoom_factor
-                            h /= st.session_state.zoom_factor
+            # JavaScript para manejar el canvas
+            js_code = f"""
+            <script>
+            // Esperar a que el DOM esté cargado
+            document.addEventListener('DOMContentLoaded', function() {{
+                const canvas = document.getElementById('drawing-canvas');
+                const ctx = canvas.getContext('2d');
+                const canvasDataElement = document.getElementById('canvas-data');
 
-                            # Borrar anotaciones en el área
-                            st.session_state.punto_herramienta.puntos = [
-                                (px, py, c) for px, py, c in st.session_state.punto_herramienta.puntos
-                                if not (x <= px <= x + w and y <= py <= y + h)
-                            ]
+                // Cargar datos existentes
+                let canvasData = JSON.parse(canvasDataElement.textContent);
 
-                            nuevas_lineas = []
-                            for (x1, y1), (x2, y2), color, grosor in st.session_state.linea_herramienta.lineas:
-                                if not (x <= x1 <= x + w and y <= y1 <= y + h) and not (
-                                        x <= x2 <= x + w and y <= y2 <= y + h):
-                                    nuevas_lineas.append(((x1, y1), (x2, y2), color, grosor))
-                            st.session_state.linea_herramienta.lineas = nuevas_lineas
+                // Configuración de dibujo
+                let isDrawing = false;
+                let drawingMode = '{drawing_mode}';
+                let strokeColor = '{stroke_color}';
+                let strokeWidth = {st.session_state.grosor_linea_actual if st.session_state.herramienta_activa == 'línea' else 3};
+                let startX, startY;
 
-                            nuevas_cotas = []
-                            for (x1, y1), (x2, y2), color in st.session_state.cota_herramienta.cotas:
-                                if not (x <= x1 <= x + w and y <= y1 <= y + h) and not (
-                                        x <= x2 <= x + w and y <= y2 <= y + h):
-                                    nuevas_cotas.append(((x1, y1), (x2, y2), color))
-                            st.session_state.cota_herramienta.cotas = nuevas_cotas
+                // Función para guardar los datos del canvas
+                function saveCanvasData() {{
+                    canvasDataElement.textContent = JSON.stringify(canvasData);
 
-                            st.session_state.texto_herramienta.textos = [
-                                (texto, tx, ty, color, tamaño) for texto, tx, ty, color, tamaño in
-                                st.session_state.texto_herramienta.textos
-                                if not (x <= tx <= x + w and y <= ty <= y + h)
-                            ]
+                    // Notificar a Streamlit que los datos han cambiado
+                    const event = new Event('canvas-data-changed');
+                    document.dispatchEvent(event);
+                }}
 
-                            nuevas_medidas = []
-                            for (x1, y1), (x2, y2), dist, color in st.session_state.medir_herramienta.medidas:
-                                if not (x <= x1 <= x + w and y <= y1 <= y + h) and not (
-                                        x <= x2 <= x + w and y <= y2 <= y + h):
-                                    nuevas_medidas.append(((x1, y1), (x2, y2), dist, color))
-                            st.session_state.medir_herramienta.medidas = nuevas_medidas
+                // Función para dibujar todos los objetos
+                function redrawCanvas() {{
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                    # Actualizar la vista
-                    st.rerun()
+                    // Dibujar todos los objetos guardados
+                    canvasData.objects.forEach(obj => {{
+                        ctx.strokeStyle = obj.strokeColor;
+                        ctx.lineWidth = obj.strokeWidth;
+                        ctx.fillStyle = obj.fillColor || 'transparent';
 
-            except Exception as e:
-                st.error(f"Error al crear el canvas: {e}")
-                st.info("Intenta reducir el zoom o usar un PDF con páginas más pequeñas.")
+                        if (obj.type === 'line') {{
+                            ctx.beginPath();
+                            ctx.moveTo(obj.x1, obj.y1);
+                            ctx.lineTo(obj.x2, obj.y2);
+                            ctx.stroke();
+                        }} else if (obj.type === 'point') {{
+                            ctx.beginPath();
+                            ctx.arc(obj.x, obj.y, obj.strokeWidth, 0, Math.PI * 2);
+                            ctx.fillStyle = obj.strokeColor;
+                            ctx.fill();
+                        }} else if (obj.type === 'text') {{
+                            ctx.font = `${{obj.fontSize}}px Arial`;
+                            ctx.fillStyle = obj.strokeColor;
+                            ctx.fillText(obj.text, obj.x, obj.y);
+                        }}
+                    }});
+                }}
+
+                // Redibujar el canvas con los datos existentes
+                redrawCanvas();
+
+                // Eventos del mouse
+                canvas.addEventListener('mousedown', function(e) {{
+                    const rect = canvas.getBoundingClientRect();
+                    startX = e.clientX - rect.left;
+                    startY = e.clientY - rect.top;
+                    isDrawing = true;
+
+                    if (drawingMode === 'point') {{
+                        canvasData.objects.push({{
+                            type: 'point',
+                            x: startX,
+                            y: startY,
+                            strokeColor: strokeColor,
+                            strokeWidth: strokeWidth
+                        }});
+                        redrawCanvas();
+                        saveCanvasData();
+                    }} else if (drawingMode === 'text') {{
+                        const text = prompt('Ingrese el texto:');
+                        if (text) {{
+                            canvasData.objects.push({{
+                                type: 'text',
+                                x: startX,
+                                y: startY,
+                                text: text,
+                                strokeColor: strokeColor,
+                                fontSize: {st.session_state.tamanio_texto if st.session_state.herramienta_activa == 'texto' else 12}
+                            }});
+                            redrawCanvas();
+                            saveCanvasData();
+                        }}
+                    }}
+                }});
+
+                canvas.addEventListener('mousemove', function(e) {{
+                    if (!isDrawing) return;
+
+                    const rect = canvas.getBoundingClientRect();
+                    const currentX = e.clientX - rect.left;
+                    const currentY = e.clientY - rect.top;
+
+                    if (drawingMode === 'line') {{
+                        redrawCanvas();
+                        ctx.beginPath();
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(currentX, currentY);
+                        ctx.strokeStyle = strokeColor;
+                        ctx.lineWidth = strokeWidth;
+                        ctx.stroke();
+                    }}
+                }});
+
+                canvas.addEventListener('mouseup', function(e) {{
+                    if (!isDrawing) return;
+
+                    const rect = canvas.getBoundingClientRect();
+                    const endX = e.clientX - rect.left;
+                    const endY = e.clientY - rect.top;
+
+                    if (drawingMode === 'line') {{
+                        canvasData.objects.push({{
+                            type: 'line',
+                            x1: startX,
+                            y1: startY,
+                            x2: endX,
+                            y2: endY,
+                            strokeColor: strokeColor,
+                            strokeWidth: strokeWidth
+                        }});
+                        redrawCanvas();
+                        saveCanvasData();
+                    }}
+
+                    isDrawing = false;
+                }});
+
+                // Evento para notificar a Streamlit
+                document.addEventListener('canvas-data-changed', function() {{
+                    // Actualizar el valor del input oculto para activar el rerun de Streamlit
+                    const hiddenInput = document.getElementById('canvas-data-input');
+                    if (hiddenInput) {{
+                        hiddenInput.value = JSON.stringify(canvasData);
+                        hiddenInput.dispatchEvent(new Event('input'));
+                    }}
+                }});
+            }});
+            </script>
+            <input type="hidden" id="canvas-data-input">
+            """
+
+            st.components.v1.html(js_code)
+
+            # Botón para procesar los datos del canvas
+            if st.button("Procesar Dibujo"):
+                # Obtener los datos del canvas (esto es solo un ejemplo, necesitarás implementar la comunicación real)
+                st.info("Procesando datos del canvas...")
+
+                # Aquí deberías implementar la lógica para procesar los datos del canvas
+                # y actualizar las herramientas correspondientes
+
+                st.rerun()
 
             # Botón para guardar el PDF
             st.sidebar.markdown("---")
