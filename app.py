@@ -82,7 +82,6 @@ def main():
             initial_drawing=None,  # In a real app, you might want to save/load state per page
             key=f"canvas_page_{st.session_state.current_page}",
             display_toolbar=True,
-            text_value=text_value if drawing_mode == "text" else "",
         )
         st.sidebar.markdown("---")
         if st.sidebar.button("💾 Guardar Cambios en PDF"):
